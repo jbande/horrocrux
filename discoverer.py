@@ -3,6 +3,7 @@ import requests
 from psycopg2.extras import RealDictCursor
 from file_encrypter import Encryptor
 import base64
+from credential import *
 
 NODE_IS_UP = 0
 NODE_NOT_RESPONDING = 1
@@ -20,10 +21,10 @@ class Discoverer:
     def __init__(self):
 
         self.chunks_db_connection = psycopg2.connect(
-            host='localhost',
-            database='chunks_db',
-            user='postgres',
-            password='Mcdldbnmlvac.82092020')
+            host=HOST,
+            database=DATABASE,
+            user=USER,
+            password=PASSWORD)
 
         self.cursor = self.chunks_db_connection.cursor(cursor_factory=RealDictCursor)
         self.nodes_list = []

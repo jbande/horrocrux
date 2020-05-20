@@ -8,7 +8,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding
-
+from credential import *
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 import os
@@ -50,10 +50,10 @@ class Encryptor:
             self.public_key_file = os.path.join(self.keys_dir_path, self.public_key_file_name)
 
         self.chunks_db_connection = psycopg2.connect(
-            host='localhost',
-            database='chunks_db',
-            user='postgres',
-            password='Mcdldbnmlvac.82092020')
+            host=HOST,
+            database=DATABASE,
+            user=USER,
+            password=PASSWORD)
 
         self.cursor = self.chunks_db_connection.cursor(cursor_factory=RealDictCursor)
 
