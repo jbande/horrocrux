@@ -3,6 +3,7 @@ from flask import Flask, Response, request, jsonify
 from marshmallow import Schema, fields, ValidationError
 from web3 import Web3# web3.py instance
 from flask_debug import Debug
+from discoverer import *
 
 w3 = Web3(Web3.HTTPProvider("http://127.0.0.1:8545"))
 w3.eth.defaultAccount = w3.eth.accounts[1]# Get stored abi and contract_address
@@ -11,6 +12,7 @@ with open("data.json", 'r') as f:
     datastore = json.load(f)
     abi = datastore["abi"]
     contract_address = datastore["contract_address"]
+
 
 def check_gender(data):
     valid_list = ["male", "female"]
@@ -29,6 +31,10 @@ class UserSchema(Schema):
 app = Flask(__name__)# api to set new user every api call
 Debug(app)
 
+encryptor = Encryptor()
+encryptor.read_pub_key()
+encryptor.read_private_key()
+encryptor.read_address()
 
 @app.route("/blockchain/user", methods=['POST'])
 def user():
@@ -57,6 +63,19 @@ def user():
     return jsonify({"data": user_data}), 200
 
 
-if __name__ == "__main__":
+@app.route("/verify", methods=['POST'])
+def respond_to_verify_node():
+    discoverer = Discoverer()
+    token_signature = discoverer.respond_to_verify_node(request)
+    return jsonify({'token-signature': token_signature}), 200
 
+
+@app.route("/hello", methods=['POST'])
+def respond_to_hello():
+    discoverer = Discoverer()
+    ret = discoverer.respond_to_hello(request)
+    return jsonify({"data": {"ret": ret}}), 200
+
+
+if __name__ == "__main__":
     app.run(debug=True)

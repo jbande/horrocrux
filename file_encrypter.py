@@ -9,6 +9,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding
 from credential import *
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 import os
@@ -193,6 +194,13 @@ class Encryptor:
     def encrypt(self, data):
         """Encrypt data using current encryptor public key"""
         self.read_pub_key()
+
+        public_key_bytes = self.public_key.public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+        #print(public_key_bytes)
+
         encrypted = self.public_key.encrypt(
             data,
             padding.OAEP(
@@ -203,9 +211,69 @@ class Encryptor:
         )
         return encrypted
 
+    def encrypt_and_sign(self, data):
+        self.read_pub_key()
+        encrypted_data = self.encrypt(data)
+
+        self.read_private_key()
+
+        signature = self.private_key.sign(data,
+                                          padding.PSS(mgf=padding.MGF1(hashes.SHA256()),salt_length=padding.PSS.MAX_LENGTH),
+                                          hashes.SHA256())
+
+        return encrypted_data, signature
+
+    def sign(self, data):
+
+        self.read_private_key()
+
+        signature = self.private_key.sign(data,
+                                          padding.PSS(mgf=padding.MGF1(hashes.SHA256()),salt_length=padding.PSS.MAX_LENGTH),
+                                          hashes.SHA256())
+
+        return signature
+
+
     @staticmethod
-    def encrypt_with_public_key(public_key, data):
+    def verify_with_signature(signature, message, public_key_bytes):
+
+        public_key = serialization.load_pem_public_key(
+            public_key_bytes,
+            backend=default_backend()
+        )
+
+        ret = True
+
+        try:
+            public_key.verify(signature,
+                              message,
+                              padding.PSS(mgf=padding.MGF1(hashes.SHA256()),
+                                          salt_length=padding.PSS.MAX_LENGTH), hashes.SHA256())
+        except InvalidSignature as e:
+            ret = False
+
+        return ret
+
+    @staticmethod
+    def get_signature(message, private_key):
+
+        signature = private_key.sign(
+            message,
+            padding.PSS(mgf=padding.MGF1(hashes.SHA256()),
+                        salt_length=padding.PSS.MAX_LENGTH),
+            hashes.SHA256())
+
+        return signature
+
+    @staticmethod
+    def encrypt_with_public_key(public_key_bytes, data):
         """Entrypt data using param public_key"""
+
+        #print(public_key_bytes)
+        public_key = serialization.load_pem_public_key(
+            public_key_bytes,
+            backend=default_backend()
+        )
 
         encrypted = public_key.encrypt(
             data,

@@ -4,10 +4,14 @@ from psycopg2.extras import RealDictCursor
 from file_encrypter import Encryptor
 import base64
 from credential import *
+from utils import byte_type_from_network, byte_type_to_network
 
 NODE_IS_UP = 0
 NODE_NOT_RESPONDING = 1
 NODE_INVALIDATED = 2
+
+HELLO_ACCEPTED = 3
+HELLO_REJECTED = 4
 
 
 class Node:
@@ -29,25 +33,25 @@ class Discoverer:
         self.cursor = self.chunks_db_connection.cursor(cursor_factory=RealDictCursor)
         self.nodes_list = []
 
-        self.verify_path = '{node}/verify'
+        self.verify_path = 'http://{node}:5000/verify'
 
     def insert_node(self, host, address, public_key):
 
         query = f"""SELECT count(*) from public.nodes where address = '{address}';"""
         self.cursor.execute(query)
-        self.chunks_db_connection.commint()
+        self.chunks_db_connection.commit()
         result = self.cursor.fetchone()
 
         if int(result['count']) > 0:
             query = f"""UPDATE public.nodes SET
             host = '{host}',
-            verified_at = CURRENT_TIMESTAMP();"""
+            verified_at = CURRENT_TIMESTAMP;"""
         else:
             query = f"""INSERT INTO public.nodes (host, address, public_key, verified_at, status) 
-            VALUES ('{host}', '{address}', {psycopg2.Binary(public_key)}, CURRENT_TIMESTAMP(), {NODE_IS_UP});"""
+            VALUES ('{host}', '{address}', {psycopg2.Binary(public_key)}, CURRENT_TIMESTAMP, {NODE_IS_UP});"""
 
         self.cursor.execute(query)
-        self.chunks_db_connection.commint()
+        self.chunks_db_connection.commit()
 
 
     def update_node_status(self, address, status):
@@ -55,24 +59,24 @@ class Discoverer:
 
         query = f"""UPDATE public.nodes SET
         status = {status},
-        verified_at = CURRENT_TIMESTAMP() 
+        verified_at = CURRENT_TIMESTAMP 
         where address = '{address}';"""
         self.cursor.execute(query)
-        self.chunks_db_connection.commint()
+        self.chunks_db_connection.commit()
 
     def get_list_of_nodes(self):
 
         query = f"""select host, address from public.nodes order by verified_at;"""
         self.cursor.execute(query)
-        self.chunks_db_connection.commint()
+        self.chunks_db_connection.commit()
         self._transform_nodes(self.cursor.fetchall())
 
     def get_public_key_for_node(self, node):
-        query = f"""select public_key from public.node where address = '{node.address}';"""
+        query = f"""select public_key from public.nodes where address = '{node.address}';"""
         self.cursor.execute(query)
-        self.chunks_db_connection.commint()
+        self.chunks_db_connection.commit()
         result = self.cursor.fetchone()
-        return result['public_key']
+        return bytes(result['public_key'])
 
 
     def _transform_nodes(self, rows):
@@ -82,54 +86,78 @@ class Discoverer:
 
     def verify_node(self, node):
         """In the local node, this function validates remote node identity and also verify if node is responding.
-        The function also updates the node status. Intended to be used before sending/requesting chunks to/from t
+        The function also updates the node status. This is intended to be used before sending/requesting chunks to/from t
         he remote node"""
 
         # We generate a token
         token = Encryptor.get_secret_token()
 
-        # We send the token to te remote node, ask him to encrypt the token with his public key and
-        # send the response back to us.
-
+        # We send the token to te remote node, ask him to sign the token with its private key
         try:
-            response = requests.post(url=self.verify_path.format(node.host), json={'token': base64.b64encode(token)})
+            response = requests.post(url=self.verify_path.format(node=node.host),
+                                     json={'token': byte_type_to_network(token)})
+
         except requests.exceptions.RequestException as e:  # This is the correct syntax
+
             self.update_node_status(node.address, status=NODE_NOT_RESPONDING)
             return NODE_NOT_RESPONDING
 
         response_json = response.json()
-        encrypted_token = base64.b64decode(response_json['encrypted-token'])
+        token_signature = byte_type_from_network(response_json['token-signature'])
 
         # We fetch our locally stored public key of the remote node
         stored_public_key = self.get_public_key_for_node(node)
 
-        # We also encrypt the token of the remote node with our stored version of the remote node public key
-        local_encrypted_token = Encryptor.encrypt_with_public_key(stored_public_key, token)
+        # Validate if the returned signature was build with a the private key associated to our
+        # saved public key for the remote node.
+        valid = Encryptor.verify_with_signature(token_signature, token, stored_public_key)
 
-        # If encryption matches the remote node pass validation
-        if encrypted_token == local_encrypted_token:
+        if valid:
             self.update_node_status(node.address, status=NODE_IS_UP)
+            print("Node valid")
             return NODE_IS_UP
         else:
             self.update_node_status(node.address, status=NODE_INVALIDATED)
+            print("Node invalid")
             return NODE_INVALIDATED
 
     @staticmethod
-    def respond_to_verify_node(response_json):
+    def respond_to_verify_node(request):
         """In the remote node, this is the function responding to the function above 'verify_node'.
         this function receives a token encrypt the token using the local public key and send re response back."""
 
-        validation_token = base64.b64decode(response_json['encrypted-token'])
+        response_json = request.get_json()
+
+        validation_token = byte_type_from_network(response_json['token'])
+
         encryptor = Encryptor()
+
         encryptor.read_pub_key()
-        encrypted_token = encryptor.encrypt(validation_token)
-        return encrypted_token
+
+        signature = encryptor.sign(validation_token)
+
+        token_signature = byte_type_to_network(signature)
+
+        return token_signature
 
 
     def hello(self):
         """When this node wants to connect with an new node. The local node should send its public key"""
         pass
 
-    def respond_to_hello(self):
+
+    def respond_to_hello(self, request):
         """Respond when the node receives a hello request"""
-        pass
+        request_json = request.get_json()
+        host = request_json['host']
+        address = request_json['address']
+
+        public_key = byte_type_from_network(request_json['public_key'])
+
+        ret = HELLO_ACCEPTED
+
+        try:
+            self.insert_node(host, address, public_key)
+        except requests.exceptions.RequestException as e:  # This is the correct syntax
+            ret = HELLO_REJECTED
+        return ret
