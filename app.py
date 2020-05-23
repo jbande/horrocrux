@@ -1,9 +1,10 @@
 import json
 from flask import Flask, Response, request, jsonify
 from marshmallow import Schema, fields, ValidationError
-from web3 import Web3# web3.py instance
+from web3 import Web3
 from flask_debug import Debug
 from discoverer import *
+from database_creator import DatabaseCreator
 
 w3 = Web3(Web3.HTTPProvider("http://127.0.0.1:8545"))
 w3.eth.defaultAccount = w3.eth.accounts[1]# Get stored abi and contract_address
@@ -27,6 +28,9 @@ class UserSchema(Schema):
     name = fields.String(required=True)
     gender = fields.String(required=True)# Initializing flask app
 
+
+db_creator = DatabaseCreator()
+db_creator.create()
 
 app = Flask(__name__)# api to set new user every api call
 Debug(app)
@@ -77,5 +81,12 @@ def respond_to_hello():
     return jsonify({"data": {"ret": ret}}), 200
 
 
+@app.route("/share", methods=['POST'])
+def respond_to_share():
+    discoverer = Discoverer()
+    ret = discoverer.respond_to_share(request)
+    return jsonify({"data": {"ret": ret}}), 200
+
+
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=True, port=PORT)
