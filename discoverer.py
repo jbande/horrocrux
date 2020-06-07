@@ -46,9 +46,9 @@ class Discoverer:
         self.cursor = self.chunks_db_connection.cursor(cursor_factory=RealDictCursor)
         self.nodes_list = []
 
-        self.verify_path = 'http://{node}:5000/verify'
-        self.hello_path = 'http://{node}:5000/hello'
-        self.sharing_path = 'http://{node}:5000/sharing'
+        self.verify_path = 'http://{node}/verify'
+        self.hello_path = 'http://{node}/hello'
+        self.sharing_path = 'http://{node}/sharing'
 
         self.this_node = self.get_this_node()
 
@@ -79,16 +79,15 @@ class Discoverer:
         print("Inspecting node")
 
         # First check if we have a node with that address
-        if self.have_node_with_this_address(node.address): #and not self.have_identical_node(node):
+        if self.have_node_with_this_address(node.address) and not self.have_identical_node(node):
 
-            print(f"We have this node {node.address}")
+            print(f"We have this node {node.address} but data received is not identical")
+            self.downgrade_node(node)
 
-            if not self.have_identical_node(node):
-                print(f"But is not identical {node.address}")
-
-                self.downgrade_node(node)
         else:
             # save in shared nodes for future validation
+            print("Saving new shared node")
+
             self.save_in_shared_nodes_table(node)
 
 
@@ -310,7 +309,7 @@ class Discoverer:
             format=serialization.PublicFormat.SubjectPublicKeyInfo
         )
 
-        return Node({'host': HOST, 'address': encryptor.sender_address, 'public_key': public_key})
+        return Node({'host': f"{HOST}:{PORT}", 'address': encryptor.sender_address, 'public_key': public_key})
 
     def show_this_node(self):
 
