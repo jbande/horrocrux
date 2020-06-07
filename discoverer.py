@@ -76,6 +76,8 @@ class Discoverer:
         If is identical we do nothing. If is not identical, we downgrade the status of the node to NODE_UNVALIDATED,
         and store the info of the node we received in the shared nodes table."""
 
+        print("Inspecting node")
+
         # First check if we have a node with that address
         if self.have_node_with_this_address(node.address): #and not self.have_identical_node(node):
 
