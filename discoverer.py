@@ -54,17 +54,17 @@ class Discoverer:
 
     def insert_or_update_node(self, host, address, public_key):
 
-        query = f"""SELECT count(*) from public.nodes where address = '{address}';"""
+        query = f"""SELECT count(*) from {SCHEMA}.nodes where address = '{address}';"""
         self.cursor.execute(query)
         self.chunks_db_connection.commit()
         result = self.cursor.fetchone()
 
         if int(result['count']) > 0:
-            query = f"""UPDATE public.nodes SET
+            query = f"""UPDATE {SCHEMA}.nodes SET
             host = '{host}',
             verified_at = CURRENT_TIMESTAMP;"""
         else:
-            query = f"""INSERT INTO public.nodes (host, address, public_key, verified_at, status) 
+            query = f"""INSERT INTO {SCHEMA}.nodes (host, address, public_key, verified_at, status) 
             VALUES ('{host}', '{address}', {psycopg2.Binary(public_key)}, CURRENT_TIMESTAMP, {NODE_IS_UP});"""
 
         self.cursor.execute(query)
@@ -85,7 +85,7 @@ class Discoverer:
 
 
     def have_identical_node(self, node):
-        query = f"""SELECT count(*) from public.nodes 
+        query = f"""SELECT count(*) from {SCHEMA}.nodes 
         where address = '{node.address}' and host = '{node.host}' and public_key = {psycopg2.Binary(node.public_key)};"""
         self.cursor.execute(query)
         self.chunks_db_connection.commit()
@@ -93,7 +93,7 @@ class Discoverer:
 
 
     def have_node_with_this_address(self, address):
-        query = f"""SELECT count(*) from public.nodes where address = '{address}';"""
+        query = f"""SELECT count(*) from {SCHEMA}.nodes where address = '{address}';"""
         self.cursor.execute(query)
         self.chunks_db_connection.commit()
         return self.cursor.fetchone()['count'] > 0
@@ -101,7 +101,7 @@ class Discoverer:
 
     def save_in_shared_nodes_table(self, node):
         # Store in shared nodes awaiting for validation.
-        query = f"""INSERT INTO public.shared_nodes (host, address, public_key) 
+        query = f"""INSERT INTO {SCHEMA}.shared_nodes (host, address, public_key) 
                     VALUES ('{node.host}', '{node.address}', {psycopg2.Binary(node.public_key)});"""
         self.cursor.execute(query)
         self.chunks_db_connection.commit()
@@ -109,7 +109,7 @@ class Discoverer:
 
     def delete_from_shared_nodes_table(self, node):
         # Store in shared nodes awaiting for validation.
-        query = f"""DELETE FROM public.shared_nodes 
+        query = f"""DELETE FROM {SCHEMA}.shared_nodes 
                     WHERE host = '{node.host}' 
                     and address = '{node.address}' 
                     and public_key {psycopg2.Binary(node.public_key)};"""
@@ -135,8 +135,8 @@ class Discoverer:
         self.save_in_shared_nodes_table(node)
 
         # We also save a copy of our stored version
-        query = f"""INSERT INTO public.shared_nodes (host, address, public_key)
-        SELECT host, address, public_key from public.nodes where address = '{node.address}';"""
+        query = f"""INSERT INTO {SCHEMA}.shared_nodes (host, address, public_key)
+        SELECT host, address, public_key from {SCHEMA}.nodes where address = '{node.address}';"""
         self.cursor.execute(query)
         self.chunks_db_connection.commit()
 
@@ -425,11 +425,18 @@ class Discoverer:
            #     return NODE_INVALIDATED
 
 
+    def save_my_data(self):
+        node = self.this_node
+        self.save_in_shared_nodes_table(node)
+
+
 if __name__ == "__main__":
 
     discoverer = Discoverer()
 
     discoverer.show_this_node()
+
+    discoverer.save_my_data()
 
     usage = """"""
 
