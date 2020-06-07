@@ -79,10 +79,11 @@ class Discoverer:
         print("Inspecting node")
 
         # First check if we have a node with that address
-        if self.have_node_with_this_address(node.address) and not self.have_identical_node(node):
+        if self.have_node_with_this_address(node.address):
 
-            print(f"We have this node {node.address} but data received is not identical")
-            self.downgrade_node(node)
+            if not self.have_identical_node(node):
+                print(f"We have this node {node.address} but data received is not identical")
+                self.downgrade_node(node)
 
         else:
             # save in shared nodes for future validation
@@ -119,7 +120,7 @@ class Discoverer:
         query = f"""DELETE FROM {SCHEMA}.shared_nodes 
                     WHERE host = '{node.host}' 
                     and address = '{node.address}' 
-                    and public_key {psycopg2.Binary(node.public_key)};"""
+                    and public_key = {psycopg2.Binary(node.public_key)};"""
         self.cursor.execute(query)
         self.chunks_db_connection.commit()
 
