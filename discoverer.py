@@ -7,6 +7,8 @@ from credential import *
 from utils import byte_type_from_network, byte_type_to_network
 from cryptography.hazmat.primitives import serialization
 from random import randrange
+import sys
+import getopt
 
 NODE_IS_UP = 0
 NODE_NOT_RESPONDING = 1
@@ -17,12 +19,18 @@ HELLO_REJECTED = 4
 
 NODE_UNVALIDATED = 5
 SHARED_NODES_ACCEPTED = 6
+NODE_DOWNGRADED = 7
+
 
 class Node:
     def __init__(self, row):
         self.host = row['host']
         self.address = row['address']
-        self.public_key = bytes(row['public_key'])
+
+        if 'public_key' in row:
+            self.public_key = bytes(row['public_key'])
+        else:
+            self.public_key = None
 
 
 class Discoverer:
@@ -42,7 +50,9 @@ class Discoverer:
         self.hello_path = 'http://{node}:5000/hello'
         self.sharing_path = 'http://{node}:5000/sharing'
 
-    def insert_node(self, host, address, public_key):
+        self.this_node = self.get_this_node()
+
+    def insert_or_update_node(self, host, address, public_key):
 
         query = f"""SELECT count(*) from public.nodes where address = '{address}';"""
         self.cursor.execute(query)
@@ -62,45 +72,98 @@ class Discoverer:
 
 
     def insert_shared_node(self, node):
+        """If we have this node, we check if info received is identical to the info we store about this node.
+        If is identical we do nothing. If is not identical, we downgrade the status of the node to NODE_UNVALIDATED,
+        and store the info of the node we received in the shared nodes table."""
 
         # First check if we have a node with that address
-        query = f"""SELECT count(*) from public.nodes where address = '{node.address}';"""
+        if self.have_node_with_this_address(node.address) and not self.have_identical_node(node):
+            self.downgrade_node(node)
+        else:
+            # save in shared nodes for future validation
+            self.save_in_shared_nodes_table(node)
+
+
+    def have_identical_node(self, node):
+        query = f"""SELECT count(*) from public.nodes 
+        where address = '{node.address}' and host = '{node.host}' and public_key = {psycopg2.Binary(node.public_key)};"""
         self.cursor.execute(query)
         self.chunks_db_connection.commit()
-        node_exists = self.cursor.fetchone()['count']
+        return self.cursor.fetchone()['count'] > 0
 
-        if node_exists > 0:
-            # Then check if the shared node totally identical to the info we have on that node
 
-            query = f"""SELECT count(*) from public.nodes 
-            where address = '{node.address}' and host = '{node.host}' and public_key = {psycopg2.Binary(node.public_key)};"""
-            self.cursor.execute(query)
-            self.chunks_db_connection.commit()
-            identical_node_count = self.cursor.fetchone()['count']
+    def have_node_with_this_address(self, address):
+        query = f"""SELECT count(*) from public.nodes where address = '{address}';"""
+        self.cursor.execute(query)
+        self.chunks_db_connection.commit()
+        return self.cursor.fetchone()['count'] > 0
 
-            if identical_node_count == 0:
-                # If it is not identical we first invalidate the node (avoiding sending/receiving
-                # transactions to/from it)
-                self.update_node_status(node.address, NODE_UNVALIDATED)
 
-                # Enter the node received data to the shared node table for further validation actions.
-                query = f"""INSERT INTO public.shared_nodes (host, address, public_key, verified_at, status) 
-                            VALUES ('{node.host}', '{node.address}', {psycopg2.Binary(node.public_key)});"""
-                self.cursor.execute(query)
-                self.chunks_db_connection.commit()
+    def save_in_shared_nodes_table(self, node):
+        # Store in shared nodes awaiting for validation.
+        query = f"""INSERT INTO public.shared_nodes (host, address, public_key) 
+                    VALUES ('{node.host}', '{node.address}', {psycopg2.Binary(node.public_key)});"""
+        self.cursor.execute(query)
+        self.chunks_db_connection.commit()
 
-        else:
-            # Store in shared nodes awaiting for validation.
-            query = f"""INSERT INTO public.shared_nodes (host, address, public_key, verified_at, status) 
-                        VALUES ('{node.host}', '{node.address}', {psycopg2.Binary(node.public_key)});"""
-            self.cursor.execute(query)
-            self.chunks_db_connection.commit()
+
+    def delete_from_shared_nodes_table(self, node):
+        # Store in shared nodes awaiting for validation.
+        query = f"""DELETE FROM public.shared_nodes 
+                    WHERE host = '{node.host}' 
+                    and address = '{node.address}' 
+                    and public_key {psycopg2.Binary(node.public_key)};"""
+        self.cursor.execute(query)
+        self.chunks_db_connection.commit()
+
+    def delete_from_shared_nodes_table_by_address(self, node):
+        # Store in shared nodes awaiting for validation.
+        query = f"""DELETE FROM public.shared_nodes 
+                    WHERE address = '{node.address}';"""
+        self.cursor.execute(query)
+        self.chunks_db_connection.commit()
+
+
+    def upgrade_node(self, node):
+        self.delete_from_shared_nodes_table_by_address(node)
+        self.insert_or_update_node(node)
+
+
+    def downgrade_node(self, node):
+        self.update_node_status(node.address, NODE_DOWNGRADED)
+
+        self.save_in_shared_nodes_table(node)
+
+        # We also save a copy of our stored version
+        query = f"""INSERT INTO public.shared_nodes (host, address, public_key)
+        SELECT host, address, public_key from public.nodes where address = '{node.address}';"""
+        self.cursor.execute(query)
+        self.chunks_db_connection.commit()
+
+    def get_newly_acquired_nodes(self):
+        query = """select address, host from {SCHEMA}.shared_nodes shn
+        left join {SCHEMA}.nodes n where n.address = shn.address
+        where n.id is null;
+        """
+        self.cursor.execute(query)
+        self.chunks_db_connection.commit()
+        return self._transform_nodes(self.cursor.fetchall())
+
+
+    def get_downgraded_nodes(self):
+        query = f"""select address, host from {SCHEMA}.shared_nodes shn
+        left join {SCHEMA}.nodes n where n.address = shn.address
+        where n.id is not null and n.status = {NODE_DOWNGRADED};
+        """
+        self.cursor.execute(query)
+        self.chunks_db_connection.commit()
+        return self._transform_nodes(self.cursor.fetchall())
 
 
     def update_node_status(self, address, status):
         """Update the status of a node."""
 
-        query = f"""UPDATE public.nodes SET
+        query = f"""UPDATE {SCHEMA}.nodes SET
         status = {status},
         verified_at = CURRENT_TIMESTAMP 
         where address = '{address}';"""
@@ -112,10 +175,10 @@ class Discoverer:
 
         if limit:
             query = f"""select host, address, public_key 
-            from public.nodes order by verified_at limit {limit} offset {offset};"""
+            from {SCHEMA}.nodes order by verified_at limit {limit} offset {offset};"""
         else:
             query = f"""select host, address, public_key 
-            from public.nodes order by verified_at;"""
+            from {SCHEMA}.nodes order by verified_at;"""
 
         self.cursor.execute(query)
         self.chunks_db_connection.commit()
@@ -123,7 +186,7 @@ class Discoverer:
 
 
     def get_count_of_nodes(self):
-        query = """select count(*) from public.nodes;"""
+        query = """select count(*) from {SCHEMA}.nodes;"""
         self.cursor.execute(query)
         self.chunks_db_connection.commit()
         row = self.cursor.fetchone()
@@ -131,7 +194,7 @@ class Discoverer:
 
 
     def get_public_key_for_node(self, node):
-        query = f"""select public_key from public.nodes where address = '{node.address}';"""
+        query = f"""select public_key from {SCHEMA}.nodes where address = '{node.address}';"""
         self.cursor.execute(query)
         self.chunks_db_connection.commit()
         result = self.cursor.fetchone()
@@ -141,7 +204,7 @@ class Discoverer:
     def get_next_node(self):
 
         query = """
-        UPDATE public.state
+        UPDATE {SCHEMA}.state
         SET sharing_pointer = the_column + 1
         RETURNING sharing_pointer;"""
 
@@ -159,6 +222,7 @@ class Discoverer:
         for row in rows:
             nodes_list.append(Node(row))
         return nodes_list
+
 
     def _transform_nodes_from_network(self, nodes_list):
         nodes_list = list(map(lambda x: {'address': x['address'],
@@ -178,36 +242,39 @@ class Discoverer:
         # We send the token to te remote node, ask him to sign the token with its private key
         try:
             response = requests.post(url=self.verify_path.format(node=node.host),
-                                     json={'token': byte_type_to_network(token)})
+                                     json={
+                                         'token': byte_type_to_network(token),
+                                         'node': {
+                                             'host': self.this_node.host,
+                                             'address': self.this_node.address,
+                                             'public_key': byte_type_to_network(self.this_node.public_key)
+                                         }
+                                     })
 
         except requests.exceptions.RequestException as e:  # This is the correct syntax
 
             self.update_node_status(node.address, status=NODE_NOT_RESPONDING)
-            return NODE_NOT_RESPONDING
+            return False
 
         response_json = response.json()
         token_signature = byte_type_from_network(response_json['token-signature'])
 
         # Validate if the returned signature was build with a the private key associated to our
         # saved public key for the remote node.
-        valid = Encryptor.verify_with_signature(token_signature, token, node.public_key)
-
-        if valid:
-            self.update_node_status(node.address, status=NODE_IS_UP)
-            print("Node valid")
-            return NODE_IS_UP
-        else:
-            self.update_node_status(node.address, status=NODE_INVALIDATED)
-            print("Node invalid")
-            return NODE_INVALIDATED
+        return Encryptor.verify_with_signature(token_signature, token, node.public_key)
 
 
-    @staticmethod
-    def respond_to_verify_node(request):
+    def respond_to_verify_node(self, request):
         """In the remote node, this is the function responding to the function above 'verify_node'.
         this function receives a token encrypt the token using the local public key and send re response back."""
 
         response_json = request.get_json()
+
+        requesting_node = Node({'host': response_json['host'],
+                                'address': response_json['address'],
+                                'public_key': byte_type_from_network(response_json['public_key'])})
+
+        self.insert_shared_node(requesting_node)
 
         validation_token = byte_type_from_network(response_json['token'])
 
@@ -222,8 +289,8 @@ class Discoverer:
         return token_signature
 
 
-    def hello(self, node):
-        """When this node wants to connect with an new node. The local node should send its public key"""
+    @staticmethod
+    def get_this_node():
 
         encryptor = Encryptor()
         encryptor.read_pub_key()
@@ -235,15 +302,30 @@ class Discoverer:
             format=serialization.PublicFormat.SubjectPublicKeyInfo
         )
 
+        return Node({'host': HOST, 'address': encryptor.sender_address, 'public_key': public_key})
+
+    def show_this_node(self):
+
+        print(self.this_node.address)
+        print(self.this_node.host)
+        print(self.this_node.public_key)
+
+
+    def hello(self, node):
+        """When this node wants to connect with an new node for the first time.
+        The local node should send its public key, if return status is HELLO_ACCEPTED
+        then the remote node is validated by calling"""
+
         response = requests.post(url=self.hello_path.format(node=node.host), json={
-            'host': 'localhost',
-            'address': encryptor.sender_address,
-            'public_key': byte_type_to_network(public_key)
+            'host': self.this_node.host,
+            'address': self.this_node.address,
+            'public_key': byte_type_to_network(self.this_node.public_key)
         })
 
         response_json = response.json()
 
         if response_json['data']['ret'] == HELLO_ACCEPTED:
+            self.update_node_status(node.address, status=NODE_UNVALIDATED)
             self.verify_node(node)
         else:
             self.update_node_status(node.address, status=NODE_INVALIDATED)
@@ -262,7 +344,7 @@ class Discoverer:
         ret = HELLO_ACCEPTED
 
         try:
-            self.insert_node(host, address, public_key)
+            self.insert_or_update_node(host, address, public_key)
         except requests.exceptions.RequestException as e:  # This is the correct syntax
             ret = HELLO_REJECTED
         return ret
@@ -307,3 +389,71 @@ class Discoverer:
             self.insert_shared_node(node)
 
         return SHARED_NODES_ACCEPTED
+
+
+    def discover(self):
+
+        # Say hello to newly acquired nodes
+        newly_acquired_nodes = discoverer.get_newly_acquired_nodes()
+        newly_accepted = {}
+        for n in newly_acquired_nodes:
+            if n.address not in newly_accepted:
+                if discoverer.verify_node(n):
+                    discoverer.upgrade_node(n)
+                    newly_accepted[n.address] = True
+                else:
+                    self.delete_from_shared_nodes_table(n)
+
+        downgraded_nodes = discoverer.get_downgraded_nodes()
+        downgraded_accepted = {}
+        for n in downgraded_nodes:
+            if n.address not in downgraded_accepted:
+                if discoverer.verify_node(n):
+                    discoverer.upgrade_node(n)
+                    downgraded_accepted[n.address] = True
+                else:
+                    self.update_node_status(n.address, status=NODE_INVALIDATED)
+
+
+           # if valid:
+           #     self.update_node_status(node.address, status=NODE_IS_UP)
+           #     print("Node valid")
+           #     return NODE_IS_UP
+           # else:
+           #     self.update_node_status(node.address, status=NODE_INVALIDATED)
+           #     print("Node invalid")
+           #     return NODE_INVALIDATED
+
+
+if __name__ == "__main__":
+
+    discoverer = Discoverer()
+
+    discoverer.show_this_node()
+
+    usage = """"""
+
+    action = None
+
+    opts, args = getopt.getopt(sys.argv[1:], "hsd", [
+        "show_node",
+        "discover"
+    ])
+
+    # print opts
+
+    for opt, arg in opts:
+        if opt == '-h':
+            print(usage)
+            sys.exit()
+
+        elif opt in ("-s", "--show_node"):
+            action = 'show_node'
+        elif opt in ("-d", "--discover"):
+            action = 'discover'
+
+    if action == 'show_node':
+        print("This node ----------------------")
+        discoverer.show_this_node()
+    elif action == 'discover':
+        discoverer.discover()
