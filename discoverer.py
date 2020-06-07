@@ -141,8 +141,8 @@ class Discoverer:
         self.chunks_db_connection.commit()
 
     def get_newly_acquired_nodes(self):
-        query = """select address, host from {SCHEMA}.shared_nodes shn
-        left join {SCHEMA}.nodes n where n.address = shn.address
+        query = f"""select shn.address, shn.host, shn.public_key from {SCHEMA}.shared_nodes shn
+        left join {SCHEMA}.nodes n on n.address = shn.address
         where n.id is null;
         """
         self.cursor.execute(query)
@@ -270,9 +270,9 @@ class Discoverer:
 
         response_json = request.get_json()
 
-        requesting_node = Node({'host': response_json['host'],
-                                'address': response_json['address'],
-                                'public_key': byte_type_from_network(response_json['public_key'])})
+        requesting_node = Node({'host': response_json['node']['host'],
+                                'address': response_json['node']['address'],
+                                'public_key': byte_type_from_network(response_json['node']['public_key'])})
 
         self.insert_shared_node(requesting_node)
 
@@ -436,7 +436,7 @@ if __name__ == "__main__":
 
     discoverer.show_this_node()
 
-    discoverer.save_my_data()
+    #discoverer.save_my_data()
 
     usage = """"""
 
