@@ -52,20 +52,20 @@ class Discoverer:
 
         self.this_node = self.get_this_node()
 
-    def insert_or_update_node(self, host, address, public_key):
+    def insert_or_update_node(self, node):
 
-        query = f"""SELECT count(*) from {SCHEMA}.nodes where address = '{address}';"""
+        query = f"""SELECT count(*) from {SCHEMA}.nodes where address = '{node.address}';"""
         self.cursor.execute(query)
         self.chunks_db_connection.commit()
         result = self.cursor.fetchone()
 
         if int(result['count']) > 0:
             query = f"""UPDATE {SCHEMA}.nodes SET
-            host = '{host}',
+            host = '{node.host}',
             verified_at = CURRENT_TIMESTAMP;"""
         else:
             query = f"""INSERT INTO {SCHEMA}.nodes (host, address, public_key, verified_at, status) 
-            VALUES ('{host}', '{address}', {psycopg2.Binary(public_key)}, CURRENT_TIMESTAMP, {NODE_IS_UP});"""
+            VALUES ('{node.host}', '{node.address}', {psycopg2.Binary(node.public_key)}, CURRENT_TIMESTAMP, {NODE_IS_UP});"""
 
         self.cursor.execute(query)
         self.chunks_db_connection.commit()
@@ -77,8 +77,14 @@ class Discoverer:
         and store the info of the node we received in the shared nodes table."""
 
         # First check if we have a node with that address
-        if self.have_node_with_this_address(node.address) and not self.have_identical_node(node):
-            self.downgrade_node(node)
+        if self.have_node_with_this_address(node.address) #and not self.have_identical_node(node):
+
+            print(f"We have this node {node.address}")
+
+            if not self.have_identical_node(node):
+                print(f"But is not identical {node.address}")
+
+                self.downgrade_node(node)
         else:
             # save in shared nodes for future validation
             self.save_in_shared_nodes_table(node)
@@ -118,14 +124,14 @@ class Discoverer:
 
     def delete_from_shared_nodes_table_by_address(self, node):
         # Store in shared nodes awaiting for validation.
-        query = f"""DELETE FROM public.shared_nodes 
+        query = f"""DELETE FROM {SCHEMA}.shared_nodes 
                     WHERE address = '{node.address}';"""
         self.cursor.execute(query)
         self.chunks_db_connection.commit()
 
 
     def upgrade_node(self, node):
-        self.delete_from_shared_nodes_table_by_address(node)
+        #self.delete_from_shared_nodes_table_by_address(node)
         self.insert_or_update_node(node)
 
 
@@ -151,8 +157,8 @@ class Discoverer:
 
 
     def get_downgraded_nodes(self):
-        query = f"""select address, host from {SCHEMA}.shared_nodes shn
-        left join {SCHEMA}.nodes n where n.address = shn.address
+        query = f"""select shn.address, shn.host, shn.public_key from {SCHEMA}.shared_nodes shn
+        left join {SCHEMA}.nodes n on n.address = shn.address
         where n.id is not null and n.status = {NODE_DOWNGRADED};
         """
         self.cursor.execute(query)
